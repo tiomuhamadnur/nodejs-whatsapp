@@ -1,0 +1,13 @@
+services:
+  whatsapp:
+    build: .
+    container_name: whatsapp
+    ports:
+      - "3000:3000"  # ganti 3000 sesuai port app-mu
+    volumes:
+      - .:/usr/src/app  # supaya live update kalo ada perubahan kode
+      - ./sessions:/usr/src/app/sessions  # simpan session WA
+      - ./uploads:/usr/src/app/uploads  # simpan file upload
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production

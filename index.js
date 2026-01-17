@@ -3,14 +3,17 @@ const QRCode = require('qrcode')
 const multer = require('multer')
 const fs = require('fs')
 const path = require('path')
+const cors = require('cors') // <-- tambah ini
+
 const {
-default: makeWASocket,
-useMultiFileAuthState,
-DisconnectReason
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason
 } = require('@whiskeysockets/baileys')
 
 const app = express()
 app.use(express.json())
+app.use(cors())
 
 const upload = multer({ dest: 'uploads/' })
 

@@ -2,13 +2,12 @@ const express = require('express')
 const QRCode = require('qrcode')
 const multer = require('multer')
 const fs = require('fs')
-const path = require('path')
-const cors = require('cors') // <-- tambah ini
+const cors = require('cors')
 
 const {
-    default: makeWASocket,
-    useMultiFileAuthState,
-    DisconnectReason
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason
 } = require('@whiskeysockets/baileys')
 
 const app = express()
@@ -17,199 +16,211 @@ app.use(cors())
 
 const upload = multer({ dest: 'uploads/' })
 
-let sock
+let sock = null
 let lastQR = null
 let status = 'disconnected'
 
+/**
+ * Start / Restart WA socket
+ */
 async function startWA() {
-const { state, saveCreds } = await useMultiFileAuthState('./sessions')
+  // kalau sudah ada socket, destroy dulu
+  if (sock) {
+    try {
+      sock.end()
+    } catch (e) {}
+    sock = null
+  }
 
-sock = makeWASocket({
-auth: state,
-printQRInTerminal: false,
-keepAliveIntervalMs: 30_000
-})
+  const { state, saveCreds } = await useMultiFileAuthState('./sessions')
 
-sock.ev.on('creds.update', saveCreds)
+  sock = makeWASocket({
+    auth: state,
+    printQRInTerminal: false,
+    keepAliveIntervalMs: 30_000
+  })
 
-sock.ev.on('connection.update', async (update) => {
-const { qr, connection, lastDisconnect } = update
+  sock.ev.on('creds.update', saveCreds)
 
-if (qr) {
-lastQR = await QRCode.toDataURL(qr)
-status = 'qr'
+  sock.ev.on('connection.update', async (update) => {
+    const { qr, connection, lastDisconnect } = update
+
+    if (qr) {
+      lastQR = await QRCode.toDataURL(qr)
+      status = 'qr'
+    }
+
+    if (connection === 'open') {
+      status = 'connected'
+      lastQR = null
+      console.log('✅ WhatsApp connected')
+    }
+
+    if (connection === 'close') {
+      status = 'disconnected'
+      lastQR = null
+
+      const reason = lastDisconnect?.error?.output?.statusCode
+      console.log('⚠️ disconnected reason:', reason)
+
+      // kalau logout dari HP, hapus session & generate QR baru
+      if (reason === DisconnectReason.loggedOut) {
+        console.log('🔁 Logged out from phone. Reset session.')
+
+        fs.rmSync('./sessions', { recursive: true, force: true })
+
+        // start baru (QR akan muncul)
+        await startWA()
+        return
+      }
+
+      // kalau bukan loggedOut, coba reconnect
+      await startWA()
+    }
+  })
 }
 
-if (connection === 'open') {
-status = 'connected'
-lastQR = null
-console.log('✅ WhatsApp connected')
-}
-
-if (connection === 'close') {
-status = 'disconnected'
-const shouldReconnect =
-lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
-if (shouldReconnect) startWA()
-}
-})
-}
-
+// start pertama kali
 startWA()
+
 
 /* ======================
 QR Connection
 ====================== */
 app.get('/qr', (req, res) => {
-res.json({ status, qr: lastQR })
+  res.json({ status, qr: lastQR })
 })
 
 /* ======================
 SEND TEXT / LINK
 ====================== */
 app.post('/send/text', async (req, res) => {
-const { number, message } = req.body
+  const { number, message } = req.body
+  if (status !== 'connected') return res.status(400).json({ error: 'WA not connected' })
 
-if (status !== 'connected') return res.status(400).json({ error: 'WA not connected' })
-
-try {
-await sock.sendMessage(`${number}@s.whatsapp.net`, { text: message })
-res.json({ success: true })
-} catch (e) {
-res.status(500).json({ error: e.message })
-}
+  try {
+    await sock.sendMessage(`${number}@s.whatsapp.net`, { text: message })
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 /* ======================
 SEND IMAGE
-====================== */
+===================== */
 app.post('/send/image', upload.single('file'), async (req, res) => {
-const { number, caption } = req.body
-
-try {
-await sock.sendMessage(`${number}@s.whatsapp.net`, {
-image: fs.readFileSync(req.file.path),
-caption
-})
-fs.unlinkSync(req.file.path)
-res.json({ success: true })
-} catch (e) {
-res.status(500).json({ error: e.message })
-}
+  const { number, caption } = req.body
+  try {
+    await sock.sendMessage(`${number}@s.whatsapp.net`, {
+      image: fs.readFileSync(req.file.path),
+      caption
+    })
+    fs.unlinkSync(req.file.path)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 /* ======================
 SEND VIDEO
-====================== */
+===================== */
 app.post('/send/video', upload.single('file'), async (req, res) => {
-const { number, caption } = req.body
-
-try {
-await sock.sendMessage(`${number}@s.whatsapp.net`, {
-video: fs.readFileSync(req.file.path),
-caption
-})
-fs.unlinkSync(req.file.path)
-res.json({ success: true })
-} catch (e) {
-res.status(500).json({ error: e.message })
-}
+  const { number, caption } = req.body
+  try {
+    await sock.sendMessage(`${number}@s.whatsapp.net`, {
+      video: fs.readFileSync(req.file.path),
+      caption
+    })
+    fs.unlinkSync(req.file.path)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 /* ======================
 SEND DOCUMENT / FILE
-====================== */
+===================== */
 app.post('/send/document', upload.single('file'), async (req, res) => {
-const { number } = req.body
-
-try {
-await sock.sendMessage(`${number}@s.whatsapp.net`, {
-document: fs.readFileSync(req.file.path),
-fileName: req.file.originalname,
-mimetype: req.file.mimetype
-})
-fs.unlinkSync(req.file.path)
-res.json({ success: true })
-} catch (e) {
-res.status(500).json({ error: e.message })
-}
+  const { number } = req.body
+  try {
+    await sock.sendMessage(`${number}@s.whatsapp.net`, {
+      document: fs.readFileSync(req.file.path),
+      fileName: req.file.originalname,
+      mimetype: req.file.mimetype
+    })
+    fs.unlinkSync(req.file.path)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 /* ======================
 SEND AUDIO
-====================== */
+===================== */
 app.post('/send/audio', upload.single('file'), async (req, res) => {
-const { number } = req.body
-
-try {
-await sock.sendMessage(`${number}@s.whatsapp.net`, {
-audio: fs.readFileSync(req.file.path),
-mimetype: req.file.mimetype || 'audio/mpeg',
-ptt: true
-})
-fs.unlinkSync(req.file.path)
-res.json({ success: true })
-} catch (e) {
-res.status(500).json({ error: e.message })
-}
+  const { number } = req.body
+  try {
+    await sock.sendMessage(`${number}@s.whatsapp.net`, {
+      audio: fs.readFileSync(req.file.path),
+      mimetype: req.file.mimetype || 'audio/mpeg',
+      ptt: true
+    })
+    fs.unlinkSync(req.file.path)
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 /* ======================
 SEND LOCATION
-====================== */
+===================== */
 app.post('/send/location', async (req, res) => {
-const { number, latitude, longitude, caption } = req.body
+  const { number, latitude, longitude, caption } = req.body
 
-if (!number || !latitude || !longitude)
-return res.status(400).json({ error: 'number, latitude, longitude required' })
+  if (!number || !latitude || !longitude)
+    return res.status(400).json({ error: 'number, latitude, longitude required' })
 
-try {
-await sock.sendMessage(`${number}@s.whatsapp.net`, {
-location: {
-degreesLatitude: latitude,
-degreesLongitude: longitude,
-name: caption || ''
-}
-})
-res.json({ success: true })
-} catch (e) {
-res.status(500).json({ error: e.message })
-}
+  try {
+    await sock.sendMessage(`${number}@s.whatsapp.net`, {
+      location: {
+        degreesLatitude: latitude,
+        degreesLongitude: longitude,
+        name: caption || ''
+      }
+    })
+    res.json({ success: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
 
 /* ======================
 DISCONNECT / LOGOUT
-====================== */
+===================== */
 app.post('/disconnect', async (req, res) => {
-    if (!sock) return res.status(400).json({ error: 'No active session' })
+  if (!sock) return res.status(400).json({ error: 'No active session' })
 
-    try {
-        // logout WA
-        await sock.logout()
+  try {
+    await sock.logout()
+    status = 'disconnected'
+    lastQR = null
 
-        // reset status
-        status = 'disconnected'
-        lastQR = null
+    fs.rmSync('./sessions', { recursive: true, force: true })
 
-        // hapus folder sessions
-        const sessionPath = './sessions'
-        if (fs.existsSync(sessionPath)) {
-        fs.rmSync(sessionPath, { recursive: true, force: true })
-        }
+    await startWA() // QR akan muncul
 
-        // start WA baru (otomatis QR muncul)
-        await startWA()
-
-        res.json({ success: true, message: 'WhatsApp disconnected and new session started. QR ready.' })
-    } catch (e) {
-        res.status(500).json({ error: e.message })
-    }
+    res.json({ success: true, message: 'WhatsApp disconnected and new session started. QR ready.' })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
 })
-
-
-
 
 /* ======================
 START SERVER
-====================== */
+===================== */
 app.listen(3000, () => console.log('🚀 WA API running on http://localhost:3000'))
